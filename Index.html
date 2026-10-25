@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flood Zone Lookup</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --ink: #0E1B2A;
+    --ink-2: #16273B;
+    --ink-3: #1D3049;
+    --line: #2A3F58;
+    --paper: #EDEBE3;
+    --muted: #8496AC;
+    --amber: #D98E2B;
+    --safe: #6BAE8B;
+    --danger: #C1543A;
+    --unknown: #7C8FA6;
+  }
+
+  *{ box-sizing: border-box; }
+
+  html,body{
+    margin:0;
+    padding:0;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: 'Spectral', Georgia, serif;
+    min-height: 100vh;
+  }
+
+  body{
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 40px 40px;
+    background-position: -1px -1px;
+    background-color: var(--ink);
+    background-blend-mode: overlay;
+  }
+
+  body::before{
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: var(--ink);
+    opacity: 0.86;
+    z-index: -1;
+  }
+
+  .wrap{
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 72px 24px 100px;
+  }
+
+  .eyebrow{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 0 0 18px;
+  }
+
+  h1{
+    font-size: 40px;
+    font-weight: 600;
+    line-height: 1.15;
+    margin: 0 0 12px;
+    color: var(--paper);
+  }
+
+  .sub{
+    font-size: 17px;
+    line-height: 1.55;
+    color: var(--muted);
+    max-width: 46ch;
+    margin: 0 0 44px;
+  }
+
+  form{
+    display: flex;
+    gap: 10px;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 20px;
+  }
+
+  input[type="text"]{
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--line);
+    color: var(--paper);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 15px;
+    padding: 10px 2px;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  input[type="text"]::placeholder{ color: #52667E; }
+  input[type="text"]:focus{ border-bottom-color: var(--amber); }
+
+  button{
+    background: var(--amber);
+    color: var(--ink);
+    border: none;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 0 22px;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: background 0.15s ease;
+  }
+
+  button:hover{ background: #E6A245; }
+  button:disabled{ background: var(--ink-3); color: var(--muted); cursor: default; }
+
+  .status{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 18px;
+    min-height: 20px;
+  }
+
+  .status.error{ color: var(--danger); }
+
+  .result{
+    margin-top: 40px;
+    display: none;
+  }
+
+  .result.show{
+    display: block;
+    animation: rise 0.35s ease;
+  }
+
+  @keyframes rise{
+    from{ opacity: 0; transform: translateY(8px); }
+    to{ opacity: 1; transform: translateY(0); }
+  }
+
+  .zone-row{
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .zone-badge{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 34px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1;
+    padding: 4px 0;
+  }
+
+  .zone-badge.high{ color: var(--danger); }
+  .zone-badge.moderate{ color: var(--amber); }
+  .zone-badge.minimal{ color: var(--safe); }
+  .zone-badge.unknown{ color: var(--unknown); }
+
+  .zone-risk-label{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .field-grid{
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 12px 16px;
+    margin-top: 22px;
+    font-size: 14.5px;
+  }
+
+  .field-grid dt{
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--muted);
+    font-size: 12.5px;
+    padding-top: 2px;
+  }
+
+  .field-grid dd{
+    margin: 0;
+    color: var(--paper);
+  }
+
+  .desc{
+    margin-top: 26px;
+    font-size: 15.5px;
+    line-height: 1.6;
+    color: #C7CDD6;
+    max-width: 50ch;
+  }
+
+  .disclaimer{
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: #52667E;
+  }
+
+  .disclaimer a{ color: #6F84A0; }
+
+  @media (prefers-reduced-motion: reduce){
+    .result.show{ animation: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">NFHL / FEMA public data</p>
+  <h1>Flood zone lookup</h1>
+  <p class="sub">Enter a U.S. street address to find its FEMA flood zone designation, pulled live from the National Flood Hazard Layer.</p>
+
+  <form id="lookup-form">
+    <input type="text" id="address" placeholder="1231 SW 112th Ave, Pembroke Pines, FL 33025" autocomplete="off" required>
+    <button type="submit" id="submit-btn">Look up</button>
+  </form>
+
+  <p class="status" id="status"></p>
+
+  <div class="result" id="result">
+    <div class="zone-row">
+      <div class="zone-badge" id="zone-badge">—</div>
+      <div class="zone-risk-label" id="zone-risk-label"></div>
+    </div>
+    <p class="desc" id="zone-desc"></p>
+    <dl class="field-grid">
+      <dt>Matched address</dt>
+      <dd id="field-address">—</dd>
+      <dt>Coordinates</dt>
+      <dd id="field-coords">—</dd>
+      <dt>Zone subtype</dt>
+      <dd id="field-subtype">—</dd>
+      <dt>Base flood elev.</dt>
+      <dd id="field-bfe">—</dd>
+    </dl>
+  </div>
+
+  <p class="disclaimer">
+    Geocoding via the Esri World Geocoder, with <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> Nominatim as a fallback. Flood zone data via FEMA's National Flood Hazard Layer (hazards.fema.gov). This is a convenience lookup, not an official determination — for insurance or permitting purposes, confirm with FEMA's <a href="https://msc.fema.gov" target="_blank" rel="noopener">Map Service Center</a> or a licensed surveyor.
+  </p>
+</div>
+
+<script>
+const form = document.getElementById('lookup-form');
+const addressInput = document.getElementById('address');
+const submitBtn = document.getElementById('submit-btn');
+const statusEl = document.getElementById('status');
+const resultEl = document.getElementById('result');
+
+const ESRI_GEOCODE_URL = 'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates';
+const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+const FEMA_URL = 'https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query';
+
+function setStatus(msg, isError){
+  statusEl.textContent = msg || '';
+  statusEl.classList.toggle('error', !!isError);
+}
+
+function setLoading(isLoading){
+  submitBtn.disabled = isLoading;
+  submitBtn.textContent = isLoading ? 'Looking up…' : 'Look up';
+}
+
+function classify(zone, subtype){
+  const z = (zone || '').toUpperCase();
+  if (z.startsWith('A') || z.startsWith('V')) {
+    return {
+      level: 'high',
+      label: 'Special flood hazard area',
+      desc: 'This zone has a 1% annual chance of flooding (the "100-year floodplain"). Federally backed mortgages here typically require flood insurance.'
+    };
+  }
+  if (z === 'X' && subtype && subtype.toUpperCase().includes('0.2 PCT')) {
+    return {
+      level: 'moderate',
+      label: 'Moderate risk — shaded zone X',
+      desc: 'This area has a 0.2% annual chance of flooding (the "500-year floodplain"). Flood insurance isn\'t federally required here, but it\'s often still worth carrying.'
+    };
+  }
+  if (z === 'X') {
+    return {
+      level: 'minimal',
+      label: 'Minimal risk — zone X',
+      desc: 'This area falls outside the mapped 1% and 0.2% annual chance floodplains. Flooding is still possible, just not the FEMA-designated high-risk zone.'
+    };
+  }
+  if (z === 'D') {
+    return {
+      level: 'unknown',
+      label: 'Undetermined',
+      desc: 'FEMA has not fully analyzed flood risk for this area. Coverage requirements and risk are unclear from this data alone.'
+    };
+  }
+  return {
+    level: 'unknown',
+    label: z || 'No zone found',
+    desc: 'No flood zone polygon was found at this exact point — it may fall in an unmapped area, or right on a zone boundary. Try FEMA\'s Map Service Center to confirm.'
+  };
+}
+
+async function fetchWithTimeout(url, options, timeoutMs){
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('timeout');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function withOrdinalSuffixes(address){
+  return address.replace(/\b(\d+)\b(?!(st|nd|rd|th)\b)/gi, (match, num) => {
+    const n = parseInt(num, 10);
+    const rem100 = n % 100;
+    if (rem100 >= 11 && rem100 <= 13) return `${num}th`;
+    switch (n % 10) {
+      case 1: return `${num}st`;
+      case 2: return `${num}nd`;
+      case 3: return `${num}rd`;
+      default: return `${num}th`;
+    }
+  });
+}
+
+// Primary geocoder: Esri World Geocoder (good US street-level coverage, CORS-enabled)
+async function esriGeocode(address){
+  const params = new URLSearchParams({
+    SingleLine: address,
+    f: 'json',
+    outFields: 'Match_addr,Addr_type',
+    maxLocations: '1',
+    countryCode: 'USA'
+  });
+  const res = await fetchWithTimeout(`${ESRI_GEOCODE_URL}?${params.toString()}`, {}, 12000);
+  if (!res.ok) throw new Error('esri geocoder request failed');
+  const data = await res.json();
+  const c = data && data.candidates && data.candidates[0];
+  // Require a reasonably confident match so we don't return a random city centroid
+  if (!c || c.score < 80) return null;
+  return {
+    lat: c.location.y,
+    lon: c.location.x,
+    matchedAddress: c.address
+  };
+}
+
+// Fallback geocoder: Nominatim (OpenStreetMap)
+async function nominatimSearch(query){
+  const params = new URLSearchParams({
+    q: query,
+    format: 'json',
+    limit: '1',
+    countrycodes: 'us'
+  });
+  const res = await fetchWithTimeout(`${NOMINATIM_URL}?${params.toString()}`, {
+    headers: { 'Accept': 'application/json' }
+  }, 12000);
+  if (!res.ok) throw new Error('geocoder request failed');
+  return res.json();
+}
+
+async function nominatimGeocode(address){
+  let data = await nominatimSearch(address);
+  if (!data || data.length === 0) {
+    const withSuffixes = withOrdinalSuffixes(address);
+    if (withSuffixes !== address) {
+      data = await nominatimSearch(withSuffixes);
+    }
+  }
+  if (!data || data.length === 0) return null;
+  const match = data[0];
+  return {
+    lat: parseFloat(match.lat),
+    lon: parseFloat(match.lon),
+    matchedAddress: match.display_name
+  };
+}
+
+async function geocode(address){
+  let result = null;
+
+  try {
+    result = await esriGeocode(address);
+  } catch (err) {
+    console.warn('Esri geocoder failed, falling back to Nominatim:', err);
+  }
+
+  if (!result) {
+    result = await nominatimGeocode(address);
+  }
+
+  if (!result) throw new Error('no_match');
+  return result;
+}
+
+async function queryFloodZone(lat, lon){
+  const params = new URLSearchParams({
+    geometry: `${lon},${lat}`,
+    geometryType: 'esriGeometryPoint',
+    inSR: '4326',
+    spatialRel: 'esriSpatialRelIntersects',
+    outFields: 'FLD_ZONE,ZONE_SUBTY,STATIC_BFE',
+    returnGeometry: 'false',
+    f: 'json'
+  });
+  const res = await fetchWithTimeout(`${FEMA_URL}?${params.toString()}`, {}, 20000);
+  if (!res.ok) throw new Error('fema request failed');
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || 'fema error');
+  return (data.features && data.features[0] && data.features[0].attributes) || null;
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const address = addressInput.value.trim();
+  if (!address) return;
+
+  resultEl.classList.remove('show');
+  setLoading(true);
+  setStatus('Geocoding address…');
+
+  try {
+    const { lat, lon, matchedAddress } = await geocode(address);
+
+    setStatus('Querying FEMA flood hazard layer… (this one can take a while)');
+    const attrs = await queryFloodZone(lat, lon);
+
+    const zone = attrs ? attrs.FLD_ZONE : null;
+    const subtype = attrs ? attrs.ZONE_SUBTY : null;
+    const bfe = attrs ? attrs.STATIC_BFE : null;
+    const info = classify(zone, subtype);
+
+    document.getElementById('zone-badge').textContent = zone || '—';
+    document.getElementById('zone-badge').className = `zone-badge ${info.level}`;
+    document.getElementById('zone-risk-label').textContent = info.label;
+    document.getElementById('zone-desc').textContent = info.desc;
+    document.getElementById('field-address').textContent = matchedAddress;
+    document.getElementById('field-coords').textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    document.getElementById('field-subtype').textContent = subtype || '—';
+    document.getElementById('field-bfe').textContent = (bfe !== null && bfe !== undefined && bfe > -9998) ? `${bfe} ft` : '—';
+
+    resultEl.classList.add('show');
+    setStatus('');
+  } catch (err) {
+    resultEl.classList.remove('show');
+    if (err.message === 'no_match') {
+      setStatus('Couldn\'t match that address. Try including the city, state and ZIP, e.g. "1231 SW 112th Ave, Pembroke Pines, FL 33025".', true);
+    } else if (err.message === 'timeout') {
+      setStatus('A server is being slow to respond right now (FEMA is the usual culprit). Give it a moment and try again.', true);
+    } else {
+      setStatus('Something went wrong reaching the geocoder or FEMA — check the browser console for details.', true);
+      console.error(err);
+    }
+  } finally {
+    setLoading(false);
+  }
+});
+</script>
+</body>
+</html>

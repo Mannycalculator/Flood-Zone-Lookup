@@ -227,7 +227,7 @@
   <p class="sub">Enter a U.S. street address to find its FEMA flood zone designation, pulled live from the National Flood Hazard Layer.</p>
 
   <form id="lookup-form">
-    <input type="text" id="address" placeholder="123 Main St, Miami, FL 33129" autocomplete="off" required>
+    <input type="text" id="address" placeholder="1231 SW 112th Ave, Pembroke Pines, FL 33025" autocomplete="off" required>
     <button type="submit" id="submit-btn">Look up</button>
   </form>
 
@@ -242,12 +242,16 @@
     <dl class="field-grid">
       <dt>Matched address</dt>
       <dd id="field-address">—</dd>
+      <dt>Match quality</dt>
+      <dd id="field-precision">—</dd>
       <dt>Coordinates</dt>
       <dd id="field-coords">—</dd>
       <dt>FIRM map number</dt>
       <dd id="field-panel">—</dd>
       <dt>Map effective date</dt>
       <dd id="field-effdate">—</dd>
+      <dt>Other zones here</dt>
+      <dd id="field-others">—</dd>
       <dt>Zone subtype</dt>
       <dd id="field-subtype">—</dd>
       <dt>Base flood elev.</dt>
@@ -365,7 +369,9 @@ async function esriGeocode(address){
   return {
     lat: c.location.y,
     lon: c.location.x,
-    matchedAddress: c.address
+    matchedAddress: c.address,
+    precision: (c.attributes && c.attributes.Addr_type) || 'Unknown',
+    source: 'Esri'
   };
 }
 
@@ -397,7 +403,9 @@ async function nominatimGeocode(address){
   return {
     lat: parseFloat(match.lat),
     lon: parseFloat(match.lon),
-    matchedAddress: match.display_name
+    matchedAddress: match.display_name,
+    precision: match.addresstype || match.type || 'Unknown',
+    source: 'OpenStreetMap'
   };
 }
 
@@ -424,7 +432,7 @@ async function queryFloodZone(lat, lon){
     geometryType: 'esriGeometryPoint',
     inSR: '4326',
     spatialRel: 'esriSpatialRelIntersects',
-    outFields: 'FLD_ZONE,ZONE_SUBTY,STATIC_BFE',
+    outFields: 'FLD_ZONE,ZONE_SUBTY,STATIC_BFE,DFIRM_ID',
     returnGeometry: 'false',
     f: 'json'
   });
@@ -432,7 +440,7 @@ async function queryFloodZone(lat, lon){
   if (!res.ok) throw new Error('fema request failed');
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || 'fema error');
-  return (data.features && data.features[0] && data.features[0].attributes) || null;
+  return (data.features || []).map(f => f.attributes);
 }
 
 // FIRM panel (map number + effective date) at the same point. Optional: if this
@@ -443,7 +451,7 @@ async function queryFirmPanel(lat, lon){
     geometryType: 'esriGeometryPoint',
     inSR: '4326',
     spatialRel: 'esriSpatialRelIntersects',
-    outFields: 'FIRM_PAN,PANEL,SUFFIX,EFF_DATE,PANEL_TYP',
+    outFields: 'FIRM_PAN,PANEL,SUFFIX,EFF_DATE,PANEL_TYP,DFIRM_ID',
     returnGeometry: 'false',
     f: 'json'
   });
@@ -451,7 +459,40 @@ async function queryFirmPanel(lat, lon){
   if (!res.ok) throw new Error('fema panel request failed');
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || 'fema panel error');
-  return (data.features && data.features[0] && data.features[0].attributes) || null;
+  return (data.features || []).map(f => f.attributes);
+}
+
+// Higher number = higher flood risk. Near county lines FEMA's data can contain
+// overlapping polygons, so one point may return several zones; we show the highest-risk one.
+function zoneRank(a){
+  const z = (a.FLD_ZONE || '').toUpperCase();
+  const sub = (a.ZONE_SUBTY || '').toUpperCase();
+  if (z.startsWith('V')) return 5;
+  if (z.startsWith('A')) return 4;
+  if (z === 'X' && sub.includes('0.2 PCT')) return 3;
+  if (z === 'D') return 2;
+  if (z === 'X') return 1;
+  return 0;
+}
+
+function pickZone(zones){
+  if (!zones || zones.length === 0) return null;
+  return zones.slice().sort((a, b) => zoneRank(b) - zoneRank(a))[0];
+}
+
+// Prefer the map panel from the same FEMA map database (county) as the chosen zone.
+function pickPanel(panels, zoneAttrs){
+  if (!panels || panels.length === 0) return null;
+  if (zoneAttrs && zoneAttrs.DFIRM_ID) {
+    const match = panels.find(p => p.DFIRM_ID === zoneAttrs.DFIRM_ID);
+    if (match) return match;
+  }
+  return panels[0];
+}
+
+function describeZone(a){
+  const sub = a.ZONE_SUBTY && a.ZONE_SUBTY.trim() ? ` (${a.ZONE_SUBTY.trim()})` : '';
+  return `${a.FLD_ZONE || '?'}${sub} — map database ${a.DFIRM_ID || '?'}`;
 }
 
 function formatEffDate(ms){
@@ -470,7 +511,7 @@ form.addEventListener('submit', async (e) => {
   setStatus('Geocoding address…');
 
   try {
-    const { lat, lon, matchedAddress } = await geocode(address);
+    const { lat, lon, matchedAddress, precision, source } = await geocode(address);
 
     setStatus('Querying FEMA flood hazard layer… (this one can take a while)');
     const [zoneResult, panelResult] = await Promise.allSettled([
@@ -478,8 +519,10 @@ form.addEventListener('submit', async (e) => {
       queryFirmPanel(lat, lon)
     ]);
     if (zoneResult.status === 'rejected') throw zoneResult.reason;
-    const attrs = zoneResult.value;
-    const panel = panelResult.status === 'fulfilled' ? panelResult.value : null;
+    const zones = zoneResult.value || [];
+    const attrs = pickZone(zones);
+    const panels = panelResult.status === 'fulfilled' ? panelResult.value : [];
+    const panel = pickPanel(panels, attrs);
     if (panelResult.status === 'rejected') console.warn('FIRM panel lookup failed:', panelResult.reason);
 
     const zone = attrs ? attrs.FLD_ZONE : null;
@@ -487,11 +530,30 @@ form.addEventListener('submit', async (e) => {
     const bfe = attrs ? attrs.STATIC_BFE : null;
     const info = classify(zone, subtype);
 
+    // If FEMA returned more than one distinct zone at this point, say so.
+    const distinct = new Map();
+    zones.forEach(z => distinct.set(`${z.FLD_ZONE}|${z.ZONE_SUBTY}|${z.DFIRM_ID}`, z));
+    const othersEl = document.getElementById('field-others');
+    if (distinct.size > 1) {
+      othersEl.textContent = 'FEMA returned more than one zone at this point: ' +
+        Array.from(distinct.values()).map(describeZone).join('; ') +
+        '. Showing the highest-risk one. This usually happens at county lines or zone boundaries.';
+    } else {
+      othersEl.textContent = '—';
+    }
+
     document.getElementById('zone-badge').textContent = zone || '—';
     document.getElementById('zone-badge').className = `zone-badge ${info.level}`;
     document.getElementById('zone-risk-label').textContent = info.label;
     document.getElementById('zone-desc').textContent = info.desc;
     document.getElementById('field-address').textContent = matchedAddress;
+    const exact = ['PointAddress', 'Subaddress', 'StreetAddress'];
+    const precEl = document.getElementById('field-precision');
+    if (source === 'Esri' && exact.includes(precision)) {
+      precEl.textContent = 'Exact address match';
+    } else {
+      precEl.textContent = `Approximate (${source}: ${precision}) — the flood zone may belong to a nearby location. Verify the matched address and coordinates above.`;
+    }
     document.getElementById('field-coords').textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
     document.getElementById('field-panel').textContent = (panel && panel.FIRM_PAN) ? panel.FIRM_PAN : '—';
     document.getElementById('field-effdate').textContent = panel ? formatEffDate(panel.EFF_DATE) : '—';

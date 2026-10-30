@@ -203,6 +203,20 @@
     max-width: 50ch;
   }
 
+  .notice{
+    margin-top: 18px;
+    padding: 12px 14px;
+    border-left: 3px solid var(--amber);
+    background: var(--ink-2);
+    font-size: 14.5px;
+    line-height: 1.55;
+    color: var(--paper);
+    max-width: 56ch;
+    display: none;
+  }
+
+  .notice.show{ display: block; }
+
   .disclaimer{
     margin-top: 60px;
     padding-top: 20px;
@@ -227,7 +241,7 @@
   <p class="sub">Enter a U.S. street address to find its FEMA flood zone designation, pulled live from the National Flood Hazard Layer.</p>
 
   <form id="lookup-form">
-    <input type="text" id="address" placeholder="123 Main Ave, Miami, FL 333129" autocomplete="off" required>
+    <input type="text" id="address" placeholder="1231 SW 112th Ave, Pembroke Pines, FL 33025" autocomplete="off" required>
     <button type="submit" id="submit-btn">Look up</button>
   </form>
 
@@ -239,6 +253,7 @@
       <div class="zone-risk-label" id="zone-risk-label"></div>
     </div>
     <p class="desc" id="zone-desc"></p>
+    <p class="notice" id="nearby-notice"></p>
     <dl class="field-grid">
       <dt>Matched address</dt>
       <dd id="field-address">—</dd>
@@ -443,6 +458,28 @@ async function queryFloodZone(lat, lon){
   return (data.features || []).map(f => f.attributes);
 }
 
+// Flood zones within a small radius of the point. A house can straddle a zone
+// boundary, and the geocoded point may sit on only one side of it.
+const NEARBY_METERS = 30;
+async function queryFloodZonesNearby(lat, lon){
+  const params = new URLSearchParams({
+    geometry: `${lon},${lat}`,
+    geometryType: 'esriGeometryPoint',
+    inSR: '4326',
+    spatialRel: 'esriSpatialRelIntersects',
+    distance: String(NEARBY_METERS),
+    units: 'esriSRUnit_Meter',
+    outFields: 'FLD_ZONE,ZONE_SUBTY,STATIC_BFE,DFIRM_ID',
+    returnGeometry: 'false',
+    f: 'json'
+  });
+  const res = await fetchWithTimeout(`${FEMA_URL}?${params.toString()}`, {}, 20000);
+  if (!res.ok) throw new Error('fema nearby request failed');
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || 'fema nearby error');
+  return (data.features || []).map(f => f.attributes);
+}
+
 // FIRM panel (map number + effective date) at the same point. Optional: if this
 // lookup fails, the flood zone result still shows.
 async function queryFirmPanel(lat, lon){
@@ -514,9 +551,10 @@ form.addEventListener('submit', async (e) => {
     const { lat, lon, matchedAddress, precision, source } = await geocode(address);
 
     setStatus('Querying FEMA flood hazard layer… (this one can take a while)');
-    const [zoneResult, panelResult] = await Promise.allSettled([
+    const [zoneResult, panelResult, nearbyResult] = await Promise.allSettled([
       queryFloodZone(lat, lon),
-      queryFirmPanel(lat, lon)
+      queryFirmPanel(lat, lon),
+      queryFloodZonesNearby(lat, lon)
     ]);
     if (zoneResult.status === 'rejected') throw zoneResult.reason;
     const zones = zoneResult.value || [];
@@ -529,6 +567,23 @@ form.addEventListener('submit', async (e) => {
     const subtype = attrs ? attrs.ZONE_SUBTY : null;
     const bfe = attrs ? attrs.STATIC_BFE : null;
     const info = classify(zone, subtype);
+
+    // Higher-risk zone within ~30 m of the point? Flag it.
+    const noticeEl = document.getElementById('nearby-notice');
+    noticeEl.classList.remove('show');
+    noticeEl.textContent = '';
+    if (nearbyResult.status === 'fulfilled') {
+      const pointRank = attrs ? zoneRank(attrs) : 0;
+      const worse = nearbyResult.value.filter(z => zoneRank(z) > pointRank);
+      const worst = pickZone(worse);
+      if (worst) {
+        const feet = Math.round(NEARBY_METERS * 3.28);
+        noticeEl.textContent = `Heads up: FEMA also maps zone ${worst.FLD_ZONE} (higher risk) within about ${NEARBY_METERS} m (${feet} ft) of this address point. If the building or lot straddles a zone boundary, part of the property may be in that zone. Confirm with FEMA's Map Service Center.`;
+        noticeEl.classList.add('show');
+      }
+    } else {
+      console.warn('Nearby zone lookup failed:', nearbyResult.reason);
+    }
 
     // If FEMA returned more than one distinct zone at this point, say so.
     const distinct = new Map();

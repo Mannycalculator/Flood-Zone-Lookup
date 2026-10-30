@@ -227,7 +227,7 @@
   <p class="sub">Enter a U.S. street address to find its FEMA flood zone designation, pulled live from the National Flood Hazard Layer.</p>
 
   <form id="lookup-form">
-    <input type="text" id="address" placeholder="123 Main St, Miami, FL 33333" autocomplete="off" required>
+    <input type="text" id="address" placeholder="1231 SW 112th Ave, Pembroke Pines, FL 33025" autocomplete="off" required>
     <button type="submit" id="submit-btn">Look up</button>
   </form>
 
@@ -244,6 +244,10 @@
       <dd id="field-address">—</dd>
       <dt>Coordinates</dt>
       <dd id="field-coords">—</dd>
+      <dt>FIRM map number</dt>
+      <dd id="field-panel">—</dd>
+      <dt>Map effective date</dt>
+      <dd id="field-effdate">—</dd>
       <dt>Zone subtype</dt>
       <dd id="field-subtype">—</dd>
       <dt>Base flood elev.</dt>
@@ -267,6 +271,7 @@ const resultEl = document.getElementById('result');
 const ESRI_GEOCODE_URL = 'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const FEMA_URL = 'https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query';
+const FEMA_PANEL_URL = 'https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/3/query';
 
 function setStatus(msg, isError){
   statusEl.textContent = msg || '';
@@ -430,6 +435,31 @@ async function queryFloodZone(lat, lon){
   return (data.features && data.features[0] && data.features[0].attributes) || null;
 }
 
+// FIRM panel (map number + effective date) at the same point. Optional: if this
+// lookup fails, the flood zone result still shows.
+async function queryFirmPanel(lat, lon){
+  const params = new URLSearchParams({
+    geometry: `${lon},${lat}`,
+    geometryType: 'esriGeometryPoint',
+    inSR: '4326',
+    spatialRel: 'esriSpatialRelIntersects',
+    outFields: 'FIRM_PAN,PANEL,SUFFIX,EFF_DATE,PANEL_TYP',
+    returnGeometry: 'false',
+    f: 'json'
+  });
+  const res = await fetchWithTimeout(`${FEMA_PANEL_URL}?${params.toString()}`, {}, 20000);
+  if (!res.ok) throw new Error('fema panel request failed');
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || 'fema panel error');
+  return (data.features && data.features[0] && data.features[0].attributes) || null;
+}
+
+function formatEffDate(ms){
+  if (ms === null || ms === undefined) return '—';
+  // ArcGIS returns dates as epoch milliseconds (UTC)
+  return new Date(ms).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const address = addressInput.value.trim();
@@ -443,7 +473,14 @@ form.addEventListener('submit', async (e) => {
     const { lat, lon, matchedAddress } = await geocode(address);
 
     setStatus('Querying FEMA flood hazard layer… (this one can take a while)');
-    const attrs = await queryFloodZone(lat, lon);
+    const [zoneResult, panelResult] = await Promise.allSettled([
+      queryFloodZone(lat, lon),
+      queryFirmPanel(lat, lon)
+    ]);
+    if (zoneResult.status === 'rejected') throw zoneResult.reason;
+    const attrs = zoneResult.value;
+    const panel = panelResult.status === 'fulfilled' ? panelResult.value : null;
+    if (panelResult.status === 'rejected') console.warn('FIRM panel lookup failed:', panelResult.reason);
 
     const zone = attrs ? attrs.FLD_ZONE : null;
     const subtype = attrs ? attrs.ZONE_SUBTY : null;
@@ -456,6 +493,8 @@ form.addEventListener('submit', async (e) => {
     document.getElementById('zone-desc').textContent = info.desc;
     document.getElementById('field-address').textContent = matchedAddress;
     document.getElementById('field-coords').textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    document.getElementById('field-panel').textContent = (panel && panel.FIRM_PAN) ? panel.FIRM_PAN : '—';
+    document.getElementById('field-effdate').textContent = panel ? formatEffDate(panel.EFF_DATE) : '—';
     document.getElementById('field-subtype').textContent = subtype || '—';
     document.getElementById('field-bfe').textContent = (bfe !== null && bfe !== undefined && bfe > -9998) ? `${bfe} ft` : '—';
 
